@@ -11,6 +11,21 @@ import re
 
 class MIDI_Generator:
     def __init__(self):
+        def install_requirements(requirements_file):
+            """
+            Install requirements from a given requirements.txt file.
+
+            Args:
+                requirements_file (str): Path to the requirements.txt file.
+            """
+            print(f"Installing requirements from {os.path.abspath(requirements_file)}...")
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", requirements_file])
+                print(f"All requirements from {requirements_file} installed successfully.")
+            except subprocess.CalledProcessError as e:
+                print(f"Error during installation: {e}")
+                sys.exit(1)
+        install_requirements("requirements.txt")
         self.parameters = {
             "prompt": {"type": "text", "default": "A happy and groovy melody.", "label": "Prompt", "required": True},
             "key": {"type": "text", "default": "C Major", "label": "Key", "required": True},
@@ -25,12 +40,7 @@ class MIDI_Generator:
             "no_amp": {"type": "checkbox", "default": False, "label": "Disable Automatic Mixed Precision"},
             "prune": {"type": "checkbox", "default": True, "label": "Prune Tokens (20%)"},
             "no_cuda": {"type": "checkbox", "default": True, "label": "Use CPU (No CUDA/MPS - reccomended for macOS)"},
-            "counter_melody_hyperness": {
-                "type": "number",
-                "default": 0.5,
-                "label": "Counter Melody Hyperness",
-                "required": False
-            }
+            "counter_melody_hyperness": {"type": "number", "default": 0.5, "label": "Counter Melody Hyperness", "required": False}
                     }
         self.log_path = os.path.abspath("output/logs/generation.log")  # Adjust this path as needed
         os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
