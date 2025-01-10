@@ -1,0 +1,10 @@
+transformers==4.47.1
+torch==2.5.1
+pypianoroll==1.0.4
+tqdm==4.67.1
+numpy==2.2.1
+pandas==2.2.3
+streamlit==1.41.1
+pretty_midi==0.2.10
+watchdog==6.0.0
+
