@@ -5,47 +5,16 @@ from copy import deepcopy
 import os
 import sys
 import numpy as np
-os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 import torch
 import torch.nn.functional as F
 import datetime
-import copy
 import bisect
 import pretty_midi  # Ensure pretty_midi is installed
-import logging
 import torch.nn.utils.prune as prune
-import tempfile
-import shutil
-import pickle
-# Configure logging
-log_filename = "output/logs/generation.log"
-os.makedirs(os.path.dirname(log_filename), exist_ok=True)  # Ensure the logging directory exists
-logging.basicConfig(
-    filename=log_filename,
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    filemode='w'  # 'w' to overwrite the log file each time, 'a' to append
-)
-
-# Redirect stdout and stderr to the log file
-class LoggerWriter:
-    def __init__(self, level):
-        self.level = level
-
-    def write(self, message):
-        if message.strip():  # Ignore empty messages
-            self.level(message)
-
-    def flush(self):  # Needed for compatibility with `sys.stdout`/`sys.stderr`
-        pass
-    def isatty(self):  # Indicate this is not a terminal
-        return False
-
-sys.stdout = LoggerWriter(logging.info)
-sys.stderr = LoggerWriter(logging.error)
+from .generate_utils import validate_output_dir
 
 
-def safe_mps_operation(operation, *tensors, **kwargs):
+def safe_mps_operation(operation, device, *tensors, **kwargs):
     """
     Helper function to safely handle MPS operations with CPU fallback.
 
@@ -86,22 +55,21 @@ def compile_model_safely(model, device):
     """
     # Skip compilation for MPS devices due to compatibility issues
     if device.type == 'mps':
-        logging.info("Skipping torch.compile() for MPS device")
+        print("Skipping torch.compile() for MPS device")
         return model
 
     try:
         compiled_model = torch.compile(model)
-        logging.info("Model compiled successfully with torch.compile()")
+        print("Model compiled successfully with torch.compile()")
         return compiled_model
     except Exception as e:
-        logging.warning(f"torch.compile() failed: {e}. Continuing with uncompiled model")
+        print.warning(f"torch.compile() failed: {e}. Continuing with uncompiled model")
         return model
 
 
 import torch
 import torch.nn as nn
 import torch.quantization
-import logging
 from torch.nn.utils import prune
 from typing import List, Tuple, Optional
 
@@ -137,7 +105,7 @@ def prune_model_weights(
             parameters_to_prune.append((module, 'weight'))
     
     if not parameters_to_prune:
-        logging.warning("No eligible parameters found for pruning")
+        print.warning("No eligible parameters found for pruning")
         return model
         
     prune.global_unstructured(
@@ -146,7 +114,7 @@ def prune_model_weights(
         amount=amount
     )
     
-    logging.info(
+    print(
         f"Pruned {amount*100:.1f}% of model weights globally "
         f"(excluding {[t.__name__ for t in excluded_layer_types]})"
     )
@@ -178,11 +146,11 @@ def quantize_model(model: nn.Module, target_device: str = "mps") -> nn.Module:
             inplace=False  # Create a new model instead of modifying in-place
         )
         
-        logging.info("Dynamic quantization applied successfully")
+        print("Dynamic quantization applied successfully")
         return quantized_model.to(target_device)
         
     except Exception as e:
-        logging.warning(
+        print.warning(
             f"Dynamic quantization failed: {e}\n"
             f"Device '{target_device}' may not support quantization. "
             "Returning original model."
@@ -218,7 +186,7 @@ def safe_device_transfer(tensor, device):
         return tensor.to(device)
     except Exception as e:
         if device.type == 'mps':
-            logging.warning(f"MPS transfer failed: {e}. Falling back to CPU")
+            print.warning(f"MPS transfer failed: {e}. Falling back to CPU")
             return tensor.cpu()
         raise
 
@@ -293,7 +261,7 @@ def safe_model_forward(model, input_tensor, conditions_tensor, device):
         output = model(input_tensor, conditions_tensor)
     except Exception as e:
         if device.type == 'mps':
-            logging.warning(f"MPS forward pass failed: {e}. Attempting CPU fallback")
+            print.warning(f"MPS forward pass failed: {e}. Attempting CPU fallback")
             # Move model and inputs to CPU
             cpu_model = model.cpu()
             cpu_input = input_tensor.cpu()
@@ -306,7 +274,7 @@ def safe_model_forward(model, input_tensor, conditions_tensor, device):
             try:
                 output = safe_device_transfer(output, device)
             except:
-                logging.warning("Could not move output back to MPS, keeping on CPU")
+                print.warning("Could not move output back to MPS, keeping on CPU")
 
             # Move model back to original device
             model.to(device)
@@ -328,16 +296,10 @@ def log_exception(exc_type, exc_value, exc_traceback):
         # Call the default exception handler for KeyboardInterrupt
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
         return
-    logging.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+    print("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
 
-# Set the global exception handler
-sys.excepthook = log_exception
 
-logging.info("Initial sys.path:")
-logging.info(sys.path)
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
-logging.info("Updated sys.path:")
-logging.info(sys.path)
+
 from utils import get_n_instruments
 from models.build_model import build_model
 from data.data_processing_reverse import ind_tensor_to_mid, ind_tensor_to_str
@@ -419,10 +381,10 @@ def group_notes_for_chords_in_midi(mid, threshold=0.05):
             chord_groups.append(current_group)
 
         # Log the chord groups
-        logging.info(f"Instrument {instrument.program}: {len(chord_groups)} chord groups identified.")
+        print(f"Instrument {instrument.program}: {len(chord_groups)} chord groups identified.")
         for idx, group in enumerate(chord_groups, 1):
             note_names = [pretty_midi.note_number_to_name(n.pitch) for n in group]
-            logging.info(f"  Chord {idx}: {', '.join(note_names)} at {group[0].start:.2f}s")
+            print(f"  Chord {idx}: {', '.join(note_names)} at {group[0].start:.2f}s")
 
 def generate(
     model,
@@ -476,7 +438,7 @@ def generate(
         debug (bool): Whether to run in debug mode (don't save files).
         varying_condition (list, optional): Varying conditions per token.
         seed (int): Random seed.
-        verbose (bool): Whether to enable verbose logging.
+        verbose (bool): Whether to enable verbose print.
         primers (list): List of primer token lists.
         min_n_instruments (int): Minimum number of instruments required to save MIDI.
         max_density (int): Maximum number of notes allowed per window.
@@ -544,7 +506,7 @@ def generate(
         output = output[-1, :, :]  # Get final timestep
 
         # Safe handling of numerical operations
-        output = safe_mps_operation(torch.nan_to_num, output, 0.0)
+        output = safe_mps_operation(torch.nan_to_num, device, output, 0.0)
 
         # Exclude symbols with optimized indexing
         if exclude_symbols:
@@ -558,10 +520,10 @@ def generate(
         if penalty_coeff > 0 and repeat_counts is not None:
             repeat_counts_tensor = torch.tensor(repeat_counts, device=output.device)
             temp_multiplier = safe_mps_operation(
-                lambda x: torch.maximum(
-                    torch.zeros_like(x),
-                    torch.log((x + 1) / 4) * penalty_coeff
-                ),
+                lambda tensor: torch.maximum(
+                    torch.zeros_like(tensor),
+                    torch.log((tensor + 1) / 4) * penalty_coeff
+                ), device,
                 repeat_counts_tensor
             )
             cached_temp = cached_temp + temp_multiplier
@@ -571,13 +533,13 @@ def generate(
 
         # Optimized top-k sampling
         if top_k > 0 and top_k < output.size(-1):
-            output, top_inds = safe_mps_operation(torch.topk, output, top_k, dim=-1)
+            output, top_inds = safe_mps_operation(torch.topk, device, output, top_k, dim=-1)
         else:
-            output, top_inds = safe_mps_operation(torch.topk, output, output.size(-1), dim=-1)
+            output, top_inds = safe_mps_operation(torch.topk, device, output,  output.size(-1), dim=-1)
 
         # Optimized top-p sampling
         if 0 < top_p < 1:
-            probs = safe_mps_operation(F.softmax, output, -1)
+            probs = safe_mps_operation(F.softmax, device, output, -1)
             sorted_probs, sorted_indices = torch.sort(probs, descending=True, dim=-1)
             cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
 
@@ -591,11 +553,11 @@ def generate(
             output = torch.log(probs + 1e-8)  # Add small epsilon for numerical stability
 
         # Final sampling with safety checks
-        output = safe_mps_operation(F.softmax, output, -1)
+        output = safe_mps_operation(F.softmax, device, output, -1)
 
         try:
             sampled_inds = safe_mps_operation(
-                lambda x: torch.multinomial(x, 1, replacement=True),
+                lambda x: torch.multinomial(x, 1, replacement=True), device,
                 output
             )
         except RuntimeError:  # Handle potential sampling issues
@@ -603,7 +565,7 @@ def generate(
             sampled_inds = output.argmax(dim=-1, keepdim=True)
 
         final_inds = safe_mps_operation(
-            lambda x, y: x.gather(1, y),
+            lambda x, y: x.gather(1, y), device, 
             top_inds,
             sampled_inds,
         ).t()
@@ -723,7 +685,7 @@ def generate(
         with autocast:
             for i in range(1, gen_len + 1):
                 if verbose and i % 100 == 0:
-                    logging.info(f"Generating token {i}/{gen_len}")
+                    print(f"Generating token {i}/{gen_len}")
 
                 # Append new tokens
                 gen_song_tensor = torch.cat((gen_song_tensor, gen_inds), 0)
@@ -802,7 +764,7 @@ def generate(
         n_instruments = get_n_instruments(symbols)
 
         if verbose:
-            logging.info("")
+            print("")
 
         if n_instruments >= min_n_instruments:
             mid = ind_tensor_to_mid(gen_song_tensor[:, idx], maps["idx2tuple"], maps["idx2event"], verbose=False)
@@ -812,9 +774,9 @@ def generate(
             if not debug:
                 mid.write(out_path_mid)
                 if verbose:
-                    logging.info(f"Saved to {out_path_mid}")
+                    print(f"Saved to {out_path_mid}")
         else:
-            logging.info(f"Only has {n_instruments} instruments, not saving.")
+            print(f"Only has {n_instruments} instruments, not saving.")
             if conditioning == "none":
                 redo_primers.append(primers[idx])
                 redo_discrete_conditions = None
@@ -831,7 +793,189 @@ def generate(
 
     return redo_primers, redo_discrete_conditions, redo_continuous_conditions
 
+def generate_midi(
+    model_dir: str,
+    cpu: bool,
+    num_runs: int,
+    gen_len: int,
+    max_input_len: int,
+    temp: List[float],
+    topk: int,
+    topp: float,
+    debug: bool,
+    seed: int,
+    no_amp: bool,
+    conditioning: str,
+    penalty_coeff: float,
+    quiet: bool,
+    short_filename: bool,
+    batch_size: int,
+    min_n_instruments: int,
+    batch_gen_dir: str,
+    out_dir: str,
+    arousal_feature: str,
+    valence: List[Optional[float]],
+    arousal_val: List[Optional[float]],
+    max_density: int,
+    window_size: float,
+    chord_threshold: float,
+    prune: int
+):
+    """
+    Main function to generate MIDI files based on the provided parameters.
+
+    Args:
+        All parameters correspond to the command-line arguments.
+    """
+
+    # If conditioning == "none", valence/arousal_val must be [None]
+    # Get the parameters of the function
+    import inspect
+    parameters = inspect.signature(generate_midi).parameters
+
+    print(f"cpu: {cpu}")
+
+    
+    if conditioning == "none":
+        if not (valence == [None] and arousal_val == [None]):
+            raise ValueError("If conditioning == 'none', do not specify valence/arousal_val.")
+    else:
+        # If conditioning is used, we expect real values
+        if valence == [None] or arousal_val == [None]:
+            raise ValueError("If conditioning is used, specify valence and arousal_val explicitly.")
+    main_output_dir = out_dir
+    validate_output_dir(main_output_dir)
+    print(f"Model directory: {model_dir}")
+    model_root_dir = os.path.abspath(os.path.join(main_output_dir, 'models', model_dir))
+    print(f"model_root_dir: {model_root_dir}")
+    # Build final output directory
+    if not os.path.exists(model_root_dir):
+        raise ValueError(f"Model directory does not exist: {model_root_dir}")
+    midi_output_dir = os.path.join(out_dir)
+    if midi_output_dir is not None and midi_output_dir != "" and batch_gen_dir is not None and batch_gen_dir != "":
+        midi_output_dir = os.path.join(midi_output_dir, batch_gen_dir)
+    if midi_output_dir == "" or midi_output_dir is None:
+        raise ValueError("Output directory is empty.")
+    if not debug:
+        os.makedirs(midi_output_dir, exist_ok=True)
+
+    # Optimization 5: Load model files efficiently
+    model_fp = os.path.join(model_root_dir, 'model.pt')
+    mappings_fp = os.path.join(model_root_dir, 'mappings.pt')
+    config_fp = os.path.join(model_root_dir, 'model_config.pt')
+
+    if not os.path.exists(mappings_fp):
+        raise ValueError(f"Mapping file not found: {mappings_fp}")
+
+    if not os.path.exists(config_fp):
+        raise ValueError(f"model_config.pt file not found: {config_fp}")
+
+    device = None
+    if cpu:
+        device = torch.device("cpu")
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else
+                              "mps" if torch.backends.mps.is_available() else
+                              "cpu")
+    config = torch.load(config_fp, map_location=device)
+    maps = torch.load(mappings_fp, map_location=device)
+
+    # Optimization 6: Build model and move to device once
+    model, _ = build_model(None, load_config_dict=config)
+    verbose = not quiet
+
+    if verbose:
+        if device.type == 'mps':
+            print("Using MPS (Apple Silicon) backend for PyTorch.")
+        elif device.type == 'cuda':
+            print("Using CUDA (GPU) backend for PyTorch.")
+        else:
+            print("Using CPU backend for PyTorch.")
+
+    model = model.to(device)
+    # Optimization 7: Load model weights efficiently
+    if os.path.exists(model_fp):
+        model.load_state_dict(torch.load(model_fp, map_location=device))
+    elif os.path.exists(model_fp.replace("best_", "")):
+        model.load_state_dict(torch.load(model_fp.replace("best_", ""), map_location=device))
+    else:
+        raise ValueError(f"Model weights not found in {model_fp} or {model_fp.replace('best_', '')}")
+
+    # Prepare continuous conditions
+    # e.g., if the user passed --valence 0.8 and --arousal_val 0.6
+    # you get conditions = [[0.8, 0.6]]
+    conditions = []
+    if valence == [None]:
+        # no conditioning or 'none'
+        conditions = None
+    elif len(valence) == 1:
+        # repeat for batch_size
+        for _ in range(batch_size):
+            conditions.append([valence[0], arousal_val[0]])
+    else:
+        # e.g. multiple valence/arousal pairs
+        for i in range(len(valence)):
+            conditions.append([valence[i], arousal_val[i]])
+
+    # Set up primers
+    primers = [["<START>"]]
+    discrete_conditions = None
+    continuous_conditions = conditions
+
+    # If user picks discrete_token:
+    #   Convert val/ar into discrete tokens. We'll skip that here for brevity
+    # If user picks none, we'll skip conditions
+    # If user picks continuous_token or continuous_concat, we pass conditions
+
+    # Actual run of the generation loop
+    for run_idx in range(num_runs):
+        primers_run = deepcopy(primers)
+        discrete_conditions_run = deepcopy(discrete_conditions)
+        continuous_conditions_run = deepcopy(continuous_conditions)
+
+        # Keep calling generate() until all seeds are done
+        # or until we run out of conditions
+        while (primers_run != [] or discrete_conditions_run != [] or continuous_conditions_run != []):
+            redo_primers, redo_discrete_conditions, redo_continuous_conditions = generate(
+                model=model,
+                maps=maps,
+                device=device,
+                out_dir=midi_output_dir,
+                conditioning=conditioning,
+                mode='full',
+                short_filename=short_filename,
+                penalty_coeff=penalty_coeff,
+                discrete_conditions=discrete_conditions_run,
+                continuous_conditions=continuous_conditions_run,
+                max_input_len=max_input_len,
+                amp=not no_amp,
+                step=None,
+                gen_len=gen_len,
+                temperatures=temp,
+                top_k=topk,
+                top_p=topp,
+                debug=debug,
+                varying_condition=None,
+                verbose=verbose,
+                primers=primers_run,
+                min_n_instruments=min_n_instruments,
+                # Pass Task 6 and Task 9 parameters
+                max_density=max_density,
+                window_size=window_size,
+                chord_threshold=chord_threshold
+            )
+
+            # Update for possible re-generation
+            primers_run = redo_primers
+            discrete_conditions_run = redo_discrete_conditions
+            continuous_conditions_run = redo_continuous_conditions
+
+    print("Generation completed.")
+
 if __name__ == '__main__':
+    # Set custom exception hook
+    sys.excepthook = log_exception
+
     script_dir = os.path.dirname(os.path.abspath(__file__))
     code_model_dir = os.path.abspath(os.path.join(script_dir, 'model'))
     code_utils_dir = os.path.join(code_model_dir, 'utils')
@@ -840,7 +984,7 @@ if __name__ == '__main__':
     parser = ArgumentParser(description='Generates emotion-based symbolic music')
 
     # Restored / Merged arguments
-    parser.add_argument('--model_dir', type=str, default='/home/hpc/bichard1/try2/output/models/continuous_concat', help='Directory with model')
+    parser.add_argument('--model_dir', type=str, default='', help='Directory with model')
     parser.add_argument('--cpu', action='store_true',
                         help="Use CPU instead of GPU")
                         
@@ -879,7 +1023,7 @@ if __name__ == '__main__':
     parser.add_argument("--batch_gen_dir", type=str, default="",
                         help="Subdirectory name for batch generation")
     parser.add_argument("--out_dir", type=str, default="output",
-                        help="Subdirectory name for batch generation")
+                        help="Output directory for MIDI files")
 
     # Add back the original --arousal_feature argument
     parser.add_argument('--arousal_feature', type=str, default='note_density',
@@ -901,155 +1045,35 @@ if __name__ == '__main__':
                         help='Time threshold in seconds to group notes into chords (Task 9)')
     parser.add_argument('--prune', type=int, default=-1,
                         help='Whether or not to prune the models weights (20%)')
+
     args = parser.parse_args()
 
-    # Basic validations
-    if len(args.valence) != len(args.arousal_val):
-        raise ValueError("Lengths of valence and arousal_val must be equal.")
-
-    # If conditioning == "none", valence/arousal_val must be [None]
-    if args.conditioning == "none":
-        if not (args.valence == [None] and args.arousal_val == [None]):
-            raise ValueError("If conditioning == 'none', do not specify valence/arousal_val.")
-    else:
-        # If conditioning is used, we expect real values
-        if args.valence == [None] or args.arousal_val == [None]:
-            raise ValueError("If conditioning is used, specify valence and arousal_val explicitly.")
-
-    main_output_dir = "output/"
-    logging.info(f"Output directory: {main_output_dir}")
-    logging.info(f"Model directory: {args.model_dir}")
-    model_root_dir = os.path.abspath(os.path.join(main_output_dir, 'models', args.model_dir))
-    logging.info(f"model_root_dir: {model_root_dir}")
-    # Build final output directory
-    if not os.path.exists(model_root_dir):
-        raise ValueError(f"Model directory does not exist: {model_root_dir}")
-    midi_output_dir = os.path.join(args.out_dir)
-    if args.batch_gen_dir != "":
-        midi_output_dir = os.path.join(midi_output_dir, args.batch_gen_dir)
-    if not args.debug:
-        os.makedirs(midi_output_dir, exist_ok=True)
-
-    # Optimization 5: Load model files efficiently
-    model_fp = os.path.join(model_root_dir, 'model.pt')
-    mappings_fp = os.path.join(model_root_dir, 'mappings.pt')
-    config_fp = os.path.join(model_root_dir, 'model_config.pt')
-
-    if not os.path.exists(mappings_fp):
-        raise ValueError(f"Mapping file not found: {mappings_fp}")
-
-    if not os.path.exists(config_fp):
-        raise ValueError(f"model_config.pt file not found: {config_fp}")
-
-    device = None
-    if args.cpu:
-        device = torch.device("cpu")
-    else:
-        device = torch.device("cuda" if torch.cuda.is_available() else
-                            "mps" if torch.backends.mps.is_available() else
-                            "cpu")
-    config = torch.load(config_fp, map_location=device)
-    maps = torch.load(mappings_fp, map_location=device)
-
-    # Optimization 6: Build model and move to device once
-    model, _ = build_model(None, load_config_dict=config)
-    if args.quiet:
-        verbose = False
-    else:
-        verbose = True
-
-    if verbose:
-        if device.type == 'mps':
-            logging.info("Using MPS (Apple Silicon) backend for PyTorch.")
-        elif device.type == 'cuda':
-            logging.info("Using CUDA (GPU) backend for PyTorch.")
-        else:
-            logging.info("Using CPU backend for PyTorch.")
-
-    model = model.to(device)
-    # Optimization 7: Load model weights efficiently
-    if os.path.exists(model_fp):
-        model.load_state_dict(torch.load(model_fp, map_location=device))
-    elif os.path.exists(model_fp.replace("best_", "")):
-        model.load_state_dict(torch.load(model_fp.replace("best_", ""), map_location=device))
-    else:
-        raise ValueError(f"Model weights not found in {model_fp} or {model_fp.replace('best_', '')}")
-
-    # Prepare continuous conditions
-    # e.g., if the user passed --valence 0.8 and --arousal_val 0.6
-    # you get conditions = [[0.8, 0.6]]
-    conditions = []
-    if args.valence == [None]:
-        # no conditioning or 'none'
-        conditions = None
-    elif len(args.valence) == 1:
-        # repeat for batch_size
-        for _ in range(args.batch_size):
-            conditions.append([args.valence[0], args.arousal_val[0]])
-    else:
-        # e.g. multiple valence/arousal pairs
-        for i in range(len(args.valence)):
-            conditions.append([args.valence[i], args.arousal_val[i]])
-
-    # Set up primers
-    primers = [["<START>"]]
-    discrete_conditions = None
-    continuous_conditions = conditions
-
-    # If user picks discrete_token:
-    #   Convert val/ar into discrete tokens. We'll skip that here for brevity
-    # If user picks none, we'll skip conditions
-    # If user picks continuous_token or continuous_concat, we pass conditions
-
-    # Actual run of the generation loop
-    from copy import deepcopy
-
-    for run_idx in range(args.num_runs):
-        primers_run = deepcopy(primers)
-        discrete_conditions_run = deepcopy(discrete_conditions)
-        continuous_conditions_run = deepcopy(continuous_conditions)
-
-        # Keep calling generate() until all seeds are done
-        # or until we run out of conditions
-        while (primers_run != [] or discrete_conditions_run != [] or continuous_conditions_run != []):
-            redo_primers, redo_discrete_conditions, redo_continuous_conditions = generate(
-                model=model,
-                maps=maps,
-                device=device,
-                out_dir=midi_output_dir,
-                conditioning=args.conditioning,
-                mode='full',
-                short_filename=args.short_filename,
-                penalty_coeff=args.penalty_coeff,
-                discrete_conditions=discrete_conditions_run,
-                continuous_conditions=continuous_conditions_run,
-                max_input_len=args.max_input_len,
-                amp=not args.no_amp,
-                step=None,
-                gen_len=args.gen_len,
-                temperatures=args.temp,
-                top_k=args.topk,
-                top_p=args.topp,
-                debug=args.debug,
-                varying_condition=None,
-                seed=args.seed,
-                verbose=verbose,
-                primers=primers_run,
-                min_n_instruments=args.min_n_instruments,
-                # Pass Task 6 and Task 9 parameters
-                max_density=args.max_density,
-                window_size=args.window_size,
-                chord_threshold=args.chord_threshold
-            )
-
-            # Update for possible re-generation
-            primers_run = redo_primers
-            discrete_conditions_run = redo_discrete_conditions
-            continuous_conditions_run = redo_continuous_conditions
-
-    logging.info("Generation completed successfully.")
-    # Clear the log file after successful generation
-    with open(log_filename, 'w') as log_file:
-        log_file.write("Log cleared after successful generation.\n")
-
-    logging.info("Log file cleared.")
+    # Call the generate_midi function with parsed arguments
+    generate_midi(
+        model_dir=args.model_dir,
+        cpu=args.cpu,
+        num_runs=args.num_runs,
+        gen_len=args.gen_len,
+        max_input_len=args.max_input_len,
+        temp=args.temp,
+        topk=args.topk,
+        topp=args.topp,
+        debug=args.debug,
+        seed=args.seed,
+        no_amp=args.no_amp,
+        conditioning=args.conditioning,
+        penalty_coeff=args.penalty_coeff,
+        quiet=args.quiet,
+        short_filename=args.short_filename,
+        batch_size=args.batch_size,
+        min_n_instruments=args.min_n_instruments,
+        batch_gen_dir=args.batch_gen_dir,
+        out_dir=args.out_dir,
+        arousal_feature=args.arousal_feature,
+        valence=args.valence,
+        arousal_val=args.arousal_val,
+        max_density=args.max_density,
+        window_size=args.window_size,
+        chord_threshold=args.chord_threshold,
+        prune=args.prune
+    )

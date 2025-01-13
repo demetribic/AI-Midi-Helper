@@ -6,24 +6,20 @@ import traceback
 import copy
 import random
 from collections import defaultdict
-import math
-import logging
-import decimal
 from itertools import groupby
+from pathlib import Path
+current_dir = Path(__file__).resolve().parent
+project_root = current_dir
+while not (project_root / 'models').exists():
+    if project_root == project_root.parent:
+        raise FileNotFoundError("Could not find project root (setup.py)")
+    project_root = project_root.parent
 
+sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / 'src'))
 
-# Set up logging
-log_file = "output/logs/post_processing.log"
-os.makedirs(os.path.dirname(log_file), exist_ok=True)  # Ensure the log directory exists
+from midi_app.generate_utils import validate_output_dir
 
-logging.basicConfig(
-    level=logging.DEBUG,  # Log all levels (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler(log_file, mode='w'),  # Log to file, overwrite each run
-        logging.StreamHandler(sys.stdout)         # Also log to console
-    ]
-)
 
 # Define allowed transitions in functional harmony
 allowed_transitions = {
@@ -43,22 +39,6 @@ allowed_transitions = {
     'vii°': ['i'],
     # Add more if needed
 }
-
-
-# Redirect stdout and stderr to the log file
-class LoggerStream:
-    def __init__(self, level):
-        self.level = level
-    
-    def write(self, message):
-        if message.strip():  # Avoid logging empty messages
-            self.level(message)
-    
-    def flush(self):
-        pass  # No-op
-
-sys.stdout = LoggerStream(logging.info)
-sys.stderr = LoggerStream(logging.error)
 
 
 ########################################################
@@ -596,7 +576,7 @@ def place_chord_blocks_with_voice_leading(instrument, total_bars=8, tempo=120.0,
     """
     notes = instrument.notes
     if not notes:
-        logging.warning("No notes found in the instrument.")
+        print("No notes found in the instrument.")
         return
     
     # Basic timing calculations
@@ -618,16 +598,16 @@ def place_chord_blocks_with_voice_leading(instrument, total_bars=8, tempo=120.0,
         else:
             if len(current_group) >= 2:
                 chord_groups.append(current_group)
-                logging.debug(f"Detected chord group starting at {current_group[0].start}: {[note.pitch for note in current_group]}")
+                print(f"Detected chord group starting at {current_group[0].start}: {[note.pitch for note in current_group]}")
             current_group = [n]
             current_pitches = {n.pitch}
     
     if len(current_group) >= 2:
         chord_groups.append(current_group)
-        logging.debug(f"Detected final chord group starting at {current_group[0].start}: {[note.pitch for note in current_group]}")
+        print(f"Detected final chord group starting at {current_group[0].start}: {[note.pitch for note in current_group]}")
     
     if not chord_groups:
-        logging.warning("No chord groups detected. Ensure that chords have overlapping notes within the time_threshold.")
+        print("No chord groups detected. Ensure that chords have overlapping notes within the time_threshold.")
     
     # Voice leading
     chord_groups = advanced_voice_leading(chord_groups, key_signature)
@@ -637,7 +617,7 @@ def place_chord_blocks_with_voice_leading(instrument, total_bars=8, tempo=120.0,
     if total_bars >= 2:
         positions.extend(range(2, total_bars, 2))
     
-    logging.debug(f"Chord positions (bars): {positions}")
+    print(f"Chord positions (bars): {positions}")
     
     # Place chords
     final_notes = []
@@ -652,7 +632,7 @@ def place_chord_blocks_with_voice_leading(instrument, total_bars=8, tempo=120.0,
         start_time = start_bar * bar_duration
         end_time = end_bar * bar_duration
         
-        logging.debug(f"Placing chord {i+1} from {start_time} to {end_time}")
+        print(f"Placing chord {i+1} from {start_time} to {end_time}")
         
         # Place the chord
         for note in chord_group:
@@ -674,7 +654,7 @@ def place_chord_blocks_with_voice_leading(instrument, total_bars=8, tempo=120.0,
     # Replace the instrument's notes
     instrument.notes = sorted(final_notes, key=lambda x: x.start)
     
-    logging.info(f"Total chords placed: {len(final_notes)}")
+    print(f"Total chords placed: {len(final_notes)}")
 
 
 ########################################################
@@ -1081,11 +1061,11 @@ def assign_instruments_to_categories(split_dict):
         if "bass" in n_lower and "bass" in free_cats:
             assigned[name] = "bass"
             free_cats.remove("bass")
-            logging.info(f"Assigned instrument '{name}' to category 'bass'.")
+            print(f"Assigned instrument '{name}' to category 'bass'.")
         elif maxp < 60 and "bass" in free_cats:
             assigned[name] = "bass"
             free_cats.remove("bass")
-            logging.info(f"Assigned instrument '{name}' to category 'bass' (pitch-based).")
+            print(f"Assigned instrument '{name}' to category 'bass' (pitch-based).")
         else:
             # Check for chord clusters
             chord_map = defaultdict(list)
@@ -1098,30 +1078,30 @@ def assign_instruments_to_categories(split_dict):
             if len(chord_groups) >= 2 and "chords" in free_cats:
                 assigned[name] = "chords"
                 free_cats.remove("chords")
-                logging.info(f"Assigned instrument '{name}' to category 'chords'.")
+                print(f"Assigned instrument '{name}' to category 'chords'.")
             else:
                 # Next preference lead -> counter
                 if "lead" in free_cats:
                     assigned[name] = "lead"
                     free_cats.remove("lead")
-                    logging.info(f"Assigned instrument '{name}' to category 'lead'.")
+                    print(f"Assigned instrument '{name}' to category 'lead'.")
                 elif "counter" in free_cats:
                     assigned[name] = "counter"
                     free_cats.remove("counter")
-                    logging.info(f"Assigned instrument '{name}' to category 'counter'.")
+                    print(f"Assigned instrument '{name}' to category 'counter'.")
                 else:
                     assigned[name] = None
-                    logging.warning(f"No category assigned for instrument '{name}'.")
+                    print(f"No category assigned for instrument '{name}'.")
 
     leftover = list(free_cats)
     none_insts = [k for k, v in assigned.items() if v is None]
     for i, inst_name in enumerate(none_insts):
         if i < len(leftover):
             assigned[inst_name] = leftover[i]
-            logging.info(f"Assigned leftover category '{leftover[i]}' to instrument '{inst_name}'.")
+            print(f"Assigned leftover category '{leftover[i]}' to instrument '{inst_name}'.")
         else:
             assigned[inst_name] = None
-            logging.warning(f"No categories left for instrument '{inst_name}'.")
+            print(f"No categories left for instrument '{inst_name}'.")
     return assigned
 
 
@@ -1145,7 +1125,7 @@ def enhanced_fill_midi_gaps(
         tonic, mode = determine_tonic_mode(key_num)
         scale_pitches = get_scale_pitches(tonic, mode)
     except ValueError as ve:
-        logging.error(f"Error parsing key signature: {ve}")
+        print(f"Error parsing key signature: {ve}")
         return
 
     for name, sub_midi in midi_dict.items():
@@ -1158,7 +1138,7 @@ def enhanced_fill_midi_gaps(
             # If too few notes, create pattern
             notes_per_bar = len(instr.notes) / float(num_bars)
             if notes_per_bar < 1.0:
-                logging.info(f"Filling gaps for category '{category}' in '{name}', hyperness={counter_hyperness}.")
+                print(f"Filling gaps for category '{category}' in '{name}', hyperness={counter_hyperness}.")
                 create_alternating_pattern(
                     instr, 
                     category, 
@@ -1182,7 +1162,7 @@ def handle_overlapping_start_notes(midi_dict, cat_map, categories, num_bars=8):
             category_instruments.append(sub_midi.instruments[0])
 
     if len(category_instruments) < 2:
-        logging.info("No overlapping instruments to handle.")
+        print("No overlapping instruments to handle.")
         return
 
     # Basic tempo
@@ -1202,7 +1182,7 @@ def handle_overlapping_start_notes(midi_dict, cat_map, categories, num_bars=8):
 
     # If more than 2, shift them
     if len(overlapping_notes) > 2:
-        logging.info(f"Found {len(overlapping_notes)} overlapping start notes. Shifting extras.")
+        print(f"Found {len(overlapping_notes)} overlapping start notes. Shifting extras.")
         for i, (instr, note) in enumerate(overlapping_notes):
             if i >= 2:  # Keep only two in the first bar
                 new_start = (total_duration / 2.0) + 0.5
@@ -1217,7 +1197,7 @@ def handle_overlapping_start_notes(midi_dict, cat_map, categories, num_bars=8):
                     note.start = total_duration - 0.1
                     note.end = total_duration
     else:
-        logging.info("No excessive overlapping starting notes found.")
+        print("No excessive overlapping starting notes found.")
 
 
 ########################################################
@@ -1233,14 +1213,14 @@ def process_chords_advanced_with_functional_harmony(instrument, key_signature, n
     """
     Advanced processing for chord instruments with functional harmony enforcement.
     """
-    logging.info("Processing chords with functional harmony.")
+    print("Processing chords with functional harmony.")
     
     try:
         key_num = parse_key_signature(key_signature)
         tonic, mode = determine_tonic_mode(key_num)
         scale_pitches = get_scale_pitches(tonic, mode)
     except ValueError as ve:
-        logging.error(f"Error parsing key signature: {ve}")
+        print(f"Error parsing key signature: {ve}")
         tonic, mode = ("C", "major")  # Default to C major
         scale_pitches = get_scale_pitches(tonic, mode)
     
@@ -1307,7 +1287,7 @@ def process_chords_advanced_with_functional_harmony(instrument, key_signature, n
     # Snap to key again after corrections
     instrument.notes = snap_notes_to_key(instrument.notes, scale_pitches)
     
-    logging.info("Chords processing with functional harmony completed.")
+    print("Chords processing with functional harmony completed.")
 
 # Second fix: Improve quantization to match FL Studio's behavior
 
@@ -1326,7 +1306,7 @@ def process_lead_or_counter_advanced_enhanced(instrument, key_signature, categor
         tonic, mode = determine_tonic_mode(key_num)
         scale_pitches = get_scale_pitches(tonic, mode)
     except ValueError as ve:
-        logging.error(f"Error parsing key signature: {ve}")
+        print(f"Error parsing key signature: {ve}")
         return
     
     instrument.notes = snap_notes_to_key(instrument.notes, scale_pitches)
@@ -1348,7 +1328,7 @@ def process_lead_or_counter_advanced_enhanced(instrument, key_signature, categor
     # Check sparseness
     notes_per_bar = len(instrument.notes) / float(num_bars)
     if notes_per_bar < 1.0:
-        logging.info(f"Instrument '{instrument.name}' is sparse. Creating pattern for '{category}', hyperness={counter_hyperness}.")
+        print(f"Instrument '{instrument.name}' is sparse. Creating pattern for '{category}', hyperness={counter_hyperness}.")
         create_alternating_pattern(
             instrument,
             category,
@@ -1422,7 +1402,7 @@ def post_process_sub_midi(sub_midi, category, key_signature, num_bars=None, coun
     Includes functional harmony enforcement.
     """
     if not sub_midi.instruments:
-        logging.warning("No instruments in sub_midi.")
+        print("No instruments in sub_midi.")
         return sub_midi
     
     instr = sub_midi.instruments[0]
@@ -1430,7 +1410,7 @@ def post_process_sub_midi(sub_midi, category, key_signature, num_bars=None, coun
         tempo_times, tempos = sub_midi.get_tempo_changes()
     except Exception as e:
         tempos = []
-        logging.error(f"Error reading tempo: {e}")
+        print(f"Error reading tempo: {e}")
     first_tempo = tempos[0] if tempos.size > 0 else 120.0
 
     # Basic cleanup
@@ -1444,7 +1424,7 @@ def post_process_sub_midi(sub_midi, category, key_signature, num_bars=None, coun
         tonic, mode = determine_tonic_mode(key_num)
         scale_pitches = get_scale_pitches(tonic, mode)
     except ValueError as ve:
-        logging.error(f"Error parsing key signature: {ve}")
+        print(f"Error parsing key signature: {ve}")
         return sub_midi
     instr.notes = snap_notes_to_key(instr.notes, scale_pitches)
 
@@ -1489,12 +1469,12 @@ def post_process_sub_midi(sub_midi, category, key_signature, num_bars=None, coun
     # Final sanity check
     for note in instr.notes:
         if note.pitch not in scale_pitches:
-            logging.error(f"Note {note.pitch} is not in the key after final snap.")
+            print(f"Note {note.pitch} is not in the key after final snap.")
 
     # Quantize to half-beat
     instr.notes = quantize_to_half_beat_in_fl_style(sub_midi, instr.notes, num_bars=bars, preserve_duration=True)
 
-    logging.info(f"Finished processing instrument '{instr.name}' as '{category}'.")
+    print(f"Finished processing instrument '{instr.name}' as '{category}'.")
     return sub_midi
 
 
@@ -1532,81 +1512,92 @@ def remove_excessive_repeats(notes, max_repeats=2):
 # 15. MAIN
 ########################################################
 
-def main():
-    random.seed(42)  # For reproducible randomness
+def post_process_midi(input_file, output_dir, key="C major", num_bars=8, counter_hyperness=0.5):
+    """
+    Process the MIDI file with the given parameters.
 
-    parser = argparse.ArgumentParser(description="Enhanced MIDI post-processor with precise chord placement and quantization.")
-    parser.add_argument("--input", required=True, help="Input MIDI file.")
-    parser.add_argument("--output_dir", required=True, help="Output directory.")
-    parser.add_argument("--key", default="C major", help="Key signature to snap everything.")
-    parser.add_argument("--num_bars", type=int, default=8,
-                        help="Trim or ensure each sub MIDI to that many bars.")
-    parser.add_argument("--counter_hyperness", type=float, default=0.5,
-                        help="For counters (0=least active, 1=most active).")
-    args = parser.parse_args()
-
-    if not os.path.isfile(args.input):
-        logging.error(f"Error: '{args.input}' does not exist.")
-        sys.exit(1)
-
-    os.makedirs(args.output_dir, exist_ok=True)
-
+    Args:
+        input_file (str): Path to the input MIDI file.
+        output_dir (str): Directory to save the processed MIDI files.
+        key (str, optional): Key signature to snap everything. Defaults to "C major".
+        num_bars (int, optional): Number of bars to trim or ensure. Defaults to 8.
+        counter_hyperness (float, optional): Hyperness level for counters. Defaults to 0.5.
+    """
     try:
-        midi = pretty_midi.PrettyMIDI(args.input)
+        if not os.path.isfile(input_file):
+            print(f"Error: '{input_file}' does not exist.")
+            raise FileNotFoundError(f"Input MIDI file not found: {input_file}")
+
+        validate_output_dir(output_dir)
+
+        midi = pretty_midi.PrettyMIDI(input_file)
         split_dict = split_midi_by_instrument(midi)
         cat_map = assign_instruments_to_categories(split_dict)
 
         # Handle overlapping starts if desired
-        handle_overlapping_start_notes(split_dict, cat_map, categories=["lead", "counter"], num_bars=args.num_bars)
+        handle_overlapping_start_notes(split_dict, cat_map, categories=["lead", "counter"], num_bars=num_bars)
 
         # Trim each sub MIDI
-        if args.num_bars:
+        if num_bars:
             for name, sub_midi in split_dict.items():
-                split_dict[name] = trim_midi_by_bars(sub_midi, args.num_bars)
+                split_dict[name] = trim_midi_by_bars(sub_midi, num_bars)
 
         # Fill gaps for counters
         enhanced_fill_midi_gaps(
             split_dict, 
             cat_map, 
-            args.key,
+            key,
             categories=["counter"], 
-            num_bars=args.num_bars,
-            counter_hyperness=args.counter_hyperness
+            num_bars=num_bars,
+            counter_hyperness=counter_hyperness
         )
 
         # Post-process each instrument
         for name, sub_midi in split_dict.items():
             cat = cat_map.get(name)
             if cat:
-                logging.info(f"Post-processing '{name}' as '{cat}'.")
+                print(f"Post-processing '{name}' as '{cat}'.")
                 processed = post_process_sub_midi(
                     sub_midi, 
                     cat,
-                    args.key,
-                    num_bars=args.num_bars,
-                    counter_hyperness=args.counter_hyperness
+                    key,
+                    num_bars=num_bars,
+                    counter_hyperness=counter_hyperness
                 )
                 # Save
                 safe_name = "".join([c for c in name if c.isalnum() or c in (' ', '_', '-')]).rstrip()
                 if not safe_name:
                     safe_name = "Unnamed"
-                out_file = os.path.join(args.output_dir, f"{cat}_{safe_name}.mid")
+                out_file = os.path.join(output_dir, f"{cat}_{safe_name}.mid")
                 processed.write(out_file)
-                logging.info(f"Wrote {cat} -> {out_file}")
+                print(f"Wrote {cat} -> {out_file}")
             else:
-                logging.warning(f"No category assigned for '{name}'. Skipping save or optionally save raw.")
+                print(f"No category assigned for '{name}'. Skipping save or optionally save raw.")
 
-        logging.info("MIDI post-processing completed successfully.")
-    
+        print("MIDI post-processing completed successfully.")
+
     except AssertionError as ae:
-        logging.error(f"Assertion Error: {ae}")
+        print(f"Assertion Error: {ae}")
         traceback.print_exc()
-        sys.exit(1)
+        raise
     except Exception as e:
-        logging.error(f"An error occurred: {e}")
+        print(f"An error occurred: {e}")
         traceback.print_exc()
-        sys.exit(1)
-
+        raise
 
 if __name__ == "__main__":
-    main()  
+    parser = argparse.ArgumentParser(description="Enhanced MIDI post-processor with precise chord placement and quantization.")
+    parser.add_argument("--input", required=True, help="Input MIDI file.")
+    parser.add_argument("--output_dir", required=True, help="Output directory.")
+    parser.add_argument("--key", default="C major", help="Key signature to snap everything.")
+    parser.add_argument("--num_bars", type=int, default=8, help="Trim or ensure each sub MIDI to that many bars.")
+    parser.add_argument("--counter_hyperness", type=float, default=0.5, help="For counters (0=least active, 1=most active).")
+    args = parser.parse_args()
+
+    post_process_midi(
+        input_file=args.input,
+        output_dir=args.output_dir,
+        key=args.key,
+        num_bars=args.num_bars,
+        counter_hyperness=args.counter_hyperness
+    )

@@ -6,34 +6,37 @@ import sys
 import torch
 import traceback
 from transformers import pipeline, AutoModelForSequenceClassification, AutoTokenizer
-import logging 
+from pathlib import Path
+
+current_dir = Path(__file__).resolve().parent
+project_root = current_dir
+while not (project_root / 'models').exists():
+    if project_root == project_root.parent:
+        raise FileNotFoundError("Could not find project root (setup.py)")
+    project_root = project_root.parent
+
+sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / 'src'))
+from midi_app.generate_utils import validate_output_dir
+from midi_app.generate import generate_midi
+
+def log_exception(exc_type, exc_value, exc_traceback):
+    """
+    Custom exception hook to log uncaught exceptions.
+    """
+    if issubclass(exc_type, KeyboardInterrupt):
+        # Call the default exception handler for KeyboardInterrupt
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    import traceback
+    print("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+    # Optionally, print the traceback to the console
+    traceback.print_exception(exc_type, exc_value, exc_traceback)
+
+
+
+# Configure print and other constants
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-# Configure logging
-log_filename = "output/logs/generation_output.log"
-logging.basicConfig(
-    filename=log_filename,
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    filemode='w'  # 'w' to overwrite the log file each time, 'a' to append
-)
-
-# Redirect stdout and stderr to the log file
-class LoggerWriter:
-    def __init__(self, level):
-        self.level = level
-
-    def write(self, message):
-        if message.strip():  # Ignore empty messages
-            if "emoji is not installed" in message or "set to" in message:
-                logging.info(message)  # Treat as informational
-            else:
-                self.level(message)
-
-    def flush(self):  # Needed for compatibility with `sys.stdout`/`sys.stderr`
-        pass
-
-sys.stdout = LoggerWriter(logging.info)
-sys.stderr = LoggerWriter(logging.error)
 
 def validate_midi_generation_args(args):
     """
@@ -111,7 +114,7 @@ def format_command(args):
         
     return " ".join(base_cmd)
 
-def load_sentiment_pipeline(cache_directory='output/models/'):
+def load_sentiment_pipeline(cache_directory):
     try:
         cache_directory = os.path.abspath(cache_directory)
         print(f"caching directory: {cache_directory}")
@@ -134,7 +137,7 @@ def load_sentiment_pipeline(cache_directory='output/models/'):
         print("pipeline loaded")
         return classifier
     except Exception as e:
-        logging.error(f"Failed to load sentiment pipeline: {e}")
+        print(f"Failed to load sentiment pipeline: {e}")
         sys.exit(1)
 
 
@@ -164,7 +167,7 @@ def parse_user_input(prompt, classifier):
         valence = min(valence, 0.8)
         return {"valence": valence, "arousal": arousal, "sentiment": sentiment.lower()}
     except Exception as e:
-        logging.error(f"Failed to parse user input: {e}")
+        print(f"Failed to parse user input: {e}")
         sys.exit(1)
 
 
@@ -177,58 +180,110 @@ def adjust_parameters_based_on_prompt(args, valence, arousal):
     if arousal > 0.5:
         args.topp = min(1.0, args.topp + 0.1)  # Allow more diversity with higher arousal
 
-    # Logging updated parameters for debugging
-    logging.info(f"[Adjusted Parameters] gen_len: {args.gen_len}, temp: {args.temp}, topp: {args.topp}")
+    # print updated parameters for debugging
+    print(f"[Adjusted Parameters] gen_len: {args.gen_len}, temp: {args.temp}, topp: {args.topp}")
     return args
 
 
-def generate_command(args, valence, arousal):
+def generate_command(args_dict):
     """
-    Constructs the command to run generate.py based on extracted parameters.
+    Executes the MIDI generation process by calling generate_midi directly.
+
+    Parameters:
+        args_dict (dict): Dictionary containing generation parameters
     """
-    dir_path = os.path.dirname(os.path.realpath(__file__))
-    script_path = os.path.join(dir_path, 'generate.py')
-    # Print the script path to debug
-    print(f"Looking for generate.py at: {script_path}")
-    if not os.path.exists(script_path):
-        raise FileNotFoundError(f"generate.py not found at {script_path}")
-    command = [
-        sys.executable, script_path,
-        "--model_dir", args.model_dir,
-        "--conditioning", args.conditioning,
-        "--valence", str(valence),
-        "--arousal_val", str(arousal),
-        "--gen_len", str(args.gen_len),
-        "--batch_size", str(args.batch_size),
-        "--min_n_instruments", str(args.min_n_instruments),
-        "--out_dir", args.out_dir
-    ]
+    # Convert dictionary args to an object for compatibility
+    class Args:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+    
+    # Set default values for missing arguments
+    default_args = {
+        'model_dir': None,
+        'num_runs': 1,
+        'debug': False,
+        'seed': None,
+        'conditioning': None,
+        'quiet': False,
+        'short_filename': False,
+        'batch_size': 1,
+        'min_n_instruments': 1,
+        'batch_gen_dir': None,
+        'arousal_feature': None,
+        'max_density': None,
+        'window_size': None,
+        'chord_threshold': None,
+        'valence': [0.5],  # Default valence 
+        'arousal_val': [0.5],  # Default arousal 
+    }
 
-    if args.no_cuda:
-        command.append("--cpu")
-    if args.debug:
-        command.append("--debug")
-    if args.no_amp:
-        command.append("--no_amp")
-    if args.quiet:
-        command.append("--quiet")
-    if args.short_filename:
-        command.append("--short_filename")
-    if args.batch_gen_dir:
-        command.extend(["--batch_gen_dir", args.batch_gen_dir])
+    # Combine default args with provided args
+    combined_args = {**default_args, **args_dict}
+    args = Args(**combined_args)
 
-    command.extend([
-        "--num_runs", str(args.num_runs),
-        "--max_input_len", str(args.max_input_len),
-        "--temp", str(args.temp[0]), str(args.temp[1]),
-        "--topk", str(args.topk),
-        "--topp", str(args.topp),
-        "--seed", str(args.seed),
-        "--penalty_coeff", str(args.penalty_coeff)
-    ])
-    print("command: ", command)
-    return command
+    # Validate output directory
+    if not hasattr(args, 'out_dir') or not args.out_dir:
+        raise ValueError("Output directory not specified")
+    
+    validate_output_dir(args.out_dir)
 
+    # Validate model directory
+    if not os.path.exists(args.model_dir):
+        raise ValueError(f"Model directory not found: {args.model_dir}")
+
+    if args.use_ai:
+        try:
+            classifier = load_sentiment_pipeline()
+            params = parse_user_input(args.prompt, classifier)
+            valence, arousal, sentiment = params['valence'], params['arousal'], params['sentiment']
+            print(f"[NLP] Sentiment: {sentiment.capitalize()}, Valence: {valence}, Arousal: {arousal}")
+            args = adjust_parameters_based_on_prompt(args, valence, arousal)
+        except Exception as e:
+            print(f"Failed to process AI parameters: {e}")
+            raise
+
+    else:
+        valence, arousal = args.valence[0], args.arousal_val[0]
+
+    try:
+        # Setup print for generation
+        print(f"Output directory: {args.out_dir}")
+        print(f"Model directory: {args.model_dir}")
+        
+        # Call generate_midi directly
+        generate_midi(
+            model_dir=args.model_dir,
+            cpu=args.no_cuda,
+            num_runs=args.num_runs,
+            gen_len=args.gen_len,
+            max_input_len=args.max_input_len,
+            temp=args.temp,
+            topk=args.topk,
+            topp=args.topp,
+            debug=args.debug,
+            seed=args.seed,
+            no_amp=args.no_amp,
+            conditioning=args.conditioning,
+            penalty_coeff=args.penalty_coeff,
+            quiet=args.quiet,
+            short_filename=args.short_filename,
+            batch_size=args.batch_size,
+            min_n_instruments=args.min_n_instruments,
+            batch_gen_dir=args.batch_gen_dir,
+            out_dir=args.out_dir,
+            arousal_feature=args.arousal_feature,
+            valence=[valence],
+            arousal_val=[arousal],
+            max_density=args.max_density,
+            window_size=args.window_size,
+            chord_threshold=args.chord_threshold,
+            prune=args.prune
+        )
+        
+        print("[Success] MIDI generation completed.")
+    except Exception as e:
+        print(f"Failed during MIDI generation: {e}")
+        raise
 
 def main():
     import argparse
@@ -236,8 +291,7 @@ def main():
 
     # Required arguments
     parser.add_argument('--prompt', type=str, help='User description for MIDI generation.')
-    parser.add_argument('--model_dir', type=str, default='', help='Model directory')
-    
+    parser.add_argument('--model_dir', type=str, required=True, help='Model directory')
     parser.add_argument('--conditioning', type=str, default='continuous_concat',
                         choices=["none", "discrete_token", "continuous_token", "continuous_concat"],
                         help='Conditioning type')
@@ -260,7 +314,6 @@ def main():
     parser.add_argument('--min_n_instruments', type=int, default=1, help='Minimum number of instruments required')
     parser.add_argument('--batch_gen_dir', type=str, default="", help="Subdirectory name for batch generation")
     parser.add_argument('--out_dir', type=str, default="", help="Subdirectory name for batch generation")
-
     # Renamed the continuous arousal argument to avoid conflict
     parser.add_argument('--valence', type=float, nargs='+', default=[0.8],
                         help='Continuous valence value(s) for conditioning')
@@ -269,98 +322,18 @@ def main():
     
     # Add the --use_ai flag
     parser.add_argument('--use_ai', action='store_true', help="Enable AI-assisted MIDI generation")
-
-    # Parse arguments
     args = parser.parse_args()
-
-    # Conditional validation for --prompt
-    if args.use_ai and not args.prompt:
-        parser.error("--prompt is required when --use_ai is set.")
-    
-    # Continue with the rest of your program
-    print("Arguments parsed successfully!")
-    print(f"Use AI: {args.use_ai}, Prompt: {args.prompt}")
-
-    if args.model_dir == '':
-        args.model_dir = os.path.abspath(f"output/models/{args.conditioning}")
-    if args.out_dir == '':
-        args.out_dir = os.path.abspath(f"output/generated_midis/")
-    
-    is_valid, error_message = validate_midi_generation_args(args)
-    if not is_valid:
-        logging.error(f"Invalid arguments: {error_message}")
-        sys.exit(1)
-
-
-    # Print all arguments for debugging
-    print("Received arguments:", vars(args))
-    
-    # Validate model directory
-    if not os.path.exists(args.model_dir):
-        print(f"Error: Model directory not found: {args.model_dir}")
-        sys.exit(1)
-        
-    # Validate output directory
     try:
-        os.makedirs(args.out_dir, exist_ok=True)
+        generate_command(args)
     except Exception as e:
-        print(f"Error creating output directory: {e}")
+        print(f"[Error] Failed to construct command: {e}")
         sys.exit(1)
-    if args.use_ai:
-        try:
-            classifier = load_sentiment_pipeline()
-            print("classifier loaded")
-        except Exception as e:
-            logging.info(f"[Error] Failed to load sentiment analysis pipeline: {e}")
-            sys.exit(1)
-
-        try:
-            print("parsing user input")
-            params = parse_user_input(args.prompt, classifier)
-            print("user input parsed")
-            valence, arousal, sentiment = params['valence'], params['arousal'], params['sentiment']
-        except Exception as e:
-            logging.info(f"[Error] Failed to parse user input: {e}")
-            sys.exit(1)
-
-        logging.info(f"[NLP] Sentiment: {sentiment.capitalize()}, Valence: {valence}, Arousal: {arousal}")
-        args = adjust_parameters_based_on_prompt(args, valence, arousal)
-    else:
-        valence, arousal = args.valence[0], args.arousal_val[0]
-    try:
-        command = generate_command(args, valence, arousal)
-        logging.info(f"[Command] {' '.join(shlex.quote(arg) for arg in command)}")
-    except Exception as e:
-        logging.info(f"[Error] Failed to construct command: {e}")
-        sys.exit(1)
-    try:
-        with subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        ) as process:
-            # Read stdout and stderr concurrently
-            stdout, stderr = process.communicate()
-
-            # Print stdout in real-time
-            for line in stdout.splitlines():
-                print(line)
-
-            if process.returncode != 0:
-                raise subprocess.CalledProcessError(
-                    process.returncode, command, output=stdout, stderr=stderr
-                )
-
-        logging.info("[Success] MIDI generation completed.")
-    except subprocess.CalledProcessError as e:
-        logging.error(f"[Error] MIDI generation failed:\n{e.stderr}")
-        sys.exit(1)
+    
 
 
 if __name__ == '__main__':
     try:
         main()
     except Exception as e:
-        logging.error(f"An error occurred: {e}")
+        print(f"An error occurred: {e}")
         sys.exit(1)
