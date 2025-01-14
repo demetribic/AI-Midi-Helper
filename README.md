@@ -1,6 +1,4 @@
-AI-Emotion-Based-Midi-Helper
-
-
+# AI-MIDI-Helper
 
 ## Setup Instructions
 
@@ -22,3 +20,11 @@ python3 -m src.midi_app.app
 
 ---
 
+## About the Project
+
+This application was built using [midi-emotion](https://github.com/serkansulun/midi-emotion) as a base. Specifically, the following components were adapted from the original repository:
+- The **model** (stayed the same)
+- The **generate.py** script (changed)
+- The **data/** directory structure (stayed the same)
+
+---
