@@ -36,8 +36,7 @@ allowed_transitions = {
     'iv': ['V', 'i'],
     'V': ['i'],
     'VI': ['ii°', 'iv'],
-    'vii°': ['i'],
-    # Add more if needed
+    'vii°': ['i']
 }
 
 
