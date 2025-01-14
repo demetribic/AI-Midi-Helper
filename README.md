@@ -1,4 +1,4 @@
-**# AI-Emotion-Based-Midi-Helper
+AI-Emotion-Based-Midi-Helper
 
 in order to use, outside of src,
  make a folder(output/models/continuous_concat),
