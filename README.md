@@ -25,7 +25,7 @@ python3 -m src.midi_app.app
 This application was built using [midi-emotion](https://github.com/serkansulun/midi-emotion) as a base. I worked specifically in the midi_app directory. Specifically, the following components were adapted from the original repository:
 - The **model** (stayed the same)
 - The **generate.py** script (changed)
-- The **data/** directory structure (stayed the same)
-- The **models/** directory structure (stayed the same)
+- The **data/** directory (stayed the same)
+- The **models/** directory (stayed the same)
 
 ---
