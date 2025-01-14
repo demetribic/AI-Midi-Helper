@@ -9,7 +9,7 @@ models/continuous_concat/
 ```
 
 ### 2. Download Model Files
-Download the required model files (everything from the continuous_concat directory) from [this link](https://drive.google.com/drive/folders/1R5-HaXmNzXBAhGq1idrDF-YEKkZm5C8C).  
+Download the required model files (everything from the continuous_concat folder) from [this link](https://drive.google.com/drive/folders/1R5-HaXmNzXBAhGq1idrDF-YEKkZm5C8C).  
 Extract the contents into the `models/continuous_concat/` directory.
 
 ### 3. Run the Application
